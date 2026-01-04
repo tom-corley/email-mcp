@@ -32,6 +32,6 @@ export function getClientCredentials() {
     return { clientId, clientSecret };
 }
 
-export function getAccessToken(args: Record<string, unknown>): string | undefined {
-    return getString(args.accessToken) || process.env.GOOGLE_ACCESS_TOKEN;
+export function getAccessToken(): string | undefined {
+    return process.env.GOOGLE_ACCESS_TOKEN;
 }

@@ -110,7 +110,7 @@ export async function handleGmailTool(
 ): Promise<ToolResult | null> {
     if (name === "gmail_get_auth_url") {
         const redirectUri =
-            getString(args.redirectUri) || process.env.GOOGLE_REDIRECT_URI;
+            process.env.GOOGLE_REDIRECT_URI || getString(args.redirectUri);
         if (!redirectUri) {
             throw new Error(
                 "Missing redirectUri. Pass redirectUri or set GOOGLE_REDIRECT_URI in secrets.env."
@@ -211,7 +211,7 @@ export async function handleGmailTool(
     }
 
     if (name === "gmail_get_unread") {
-        const accessToken = getAccessToken(args);
+        const accessToken = getAccessToken();
         if (!accessToken) {
             return authHelp();
         }
@@ -264,7 +264,7 @@ export async function handleGmailTool(
     }
 
     if (name === "gmail_create_draft") {
-        const accessToken = getAccessToken(args);
+        const accessToken = getAccessToken();
         if (!accessToken) {
             return authHelp();
         }
