@@ -35,3 +35,13 @@ export function getClientCredentials() {
 export function getAccessToken(): string | undefined {
     return process.env.GOOGLE_ACCESS_TOKEN;
 }
+
+export function getAuthEnvStatus() {
+    return {
+        hasClientId: Boolean(process.env.GOOGLE_CLIENT_ID),
+        hasClientSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET),
+        hasAccessToken: Boolean(process.env.GOOGLE_ACCESS_TOKEN),
+        hasRefreshToken: Boolean(process.env.GOOGLE_REFRESH_TOKEN),
+        hasRedirectUri: Boolean(process.env.GOOGLE_REDIRECT_URI),
+    };
+}

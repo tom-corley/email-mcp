@@ -5,12 +5,27 @@ import {
     getNumber,
     getString,
 } from "./utils.js";
-import { getAccessToken, getClientCredentials } from "./secrets.js";
+import { getAccessToken, getAuthEnvStatus, getClientCredentials } from "./secrets.js";
 import { getAuthHelpText } from "./auth.js";
 
 type ToolResult = {
     content: Array<{ type: "text"; text: string }>;
 };
+
+function errorResult(message: string, details?: Record<string, unknown>): ToolResult {
+    const payload = {
+        error: message,
+        details,
+    };
+    return {
+        content: [
+            {
+                type: "text",
+                text: JSON.stringify(payload),
+            },
+        ],
+    };
+}
 
 function authHelp(): ToolResult {
     return {
@@ -108,15 +123,26 @@ export async function handleGmailTool(
     name: string,
     args: Record<string, unknown>
 ): Promise<ToolResult | null> {
+    const envStatus = getAuthEnvStatus();
+
     if (name === "gmail_get_auth_url") {
         const redirectUri =
             process.env.GOOGLE_REDIRECT_URI || getString(args.redirectUri);
         if (!redirectUri) {
-            throw new Error(
-                "Missing redirectUri. Pass redirectUri or set GOOGLE_REDIRECT_URI in secrets.env."
+            return errorResult(
+                "Missing redirectUri. Pass redirectUri or set GOOGLE_REDIRECT_URI in secrets.env.",
+                envStatus
             );
         }
-        const { clientId } = getClientCredentials();
+        let clientId: string;
+        try {
+            ({ clientId } = getClientCredentials());
+        } catch (error) {
+            return errorResult(
+                error instanceof Error ? error.message : "Missing client credentials.",
+                envStatus
+            );
+        }
         const scopes = Array.isArray(args.scope)
             ? args.scope.filter((scope): scope is string => typeof scope === "string")
             : [];
@@ -155,9 +181,18 @@ export async function handleGmailTool(
         const code = getString(args.code);
         const redirectUri = getString(args.redirectUri);
         if (!code || !redirectUri) {
-            throw new Error("Missing code or redirectUri.");
+            return errorResult("Missing code or redirectUri.", envStatus);
         }
-        const { clientId, clientSecret } = getClientCredentials();
+        let clientId: string;
+        let clientSecret: string;
+        try {
+            ({ clientId, clientSecret } = getClientCredentials());
+        } catch (error) {
+            return errorResult(
+                error instanceof Error ? error.message : "Missing client credentials.",
+                envStatus
+            );
+        }
         const body = new URLSearchParams({
             code,
             client_id: clientId,
@@ -165,55 +200,79 @@ export async function handleGmailTool(
             redirect_uri: redirectUri,
             grant_type: "authorization_code",
         });
-        const data = await fetchJson("https://oauth2.googleapis.com/token", {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body,
-        });
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: JSON.stringify(data),
-                },
-            ],
-        };
+        try {
+            const data = await fetchJson("https://oauth2.googleapis.com/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body,
+            });
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify(data),
+                    },
+                ],
+            };
+        } catch (error) {
+            return errorResult(
+                error instanceof Error ? error.message : "Failed to exchange code.",
+                envStatus
+            );
+        }
     }
 
     if (name === "gmail_refresh_access_token") {
         const refreshToken =
             getString(args.refreshToken) || process.env.GOOGLE_REFRESH_TOKEN;
         if (!refreshToken) {
-            throw new Error(
-                "Missing refresh token. Set GOOGLE_REFRESH_TOKEN or pass refreshToken."
+            return errorResult(
+                "Missing refresh token. Set GOOGLE_REFRESH_TOKEN or pass refreshToken.",
+                envStatus
             );
         }
-        const { clientId, clientSecret } = getClientCredentials();
+        let clientId: string;
+        let clientSecret: string;
+        try {
+            ({ clientId, clientSecret } = getClientCredentials());
+        } catch (error) {
+            return errorResult(
+                error instanceof Error ? error.message : "Missing client credentials.",
+                envStatus
+            );
+        }
         const body = new URLSearchParams({
             refresh_token: refreshToken,
             client_id: clientId,
             client_secret: clientSecret,
             grant_type: "refresh_token",
         });
-        const data = await fetchJson("https://oauth2.googleapis.com/token", {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body,
-        });
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: JSON.stringify(data),
-                },
-            ],
-        };
+        try {
+            const data = await fetchJson("https://oauth2.googleapis.com/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body,
+            });
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify(data),
+                    },
+                ],
+            };
+        } catch (error) {
+            return errorResult(
+                error instanceof Error ? error.message : "Failed to refresh token.",
+                envStatus
+            );
+        }
     }
 
     if (name === "gmail_get_unread") {
         const accessToken = getAccessToken();
         if (!accessToken) {
-            return authHelp();
+            return errorResult(getAuthHelpText(), envStatus);
         }
         const userId = getString(args.userId) || "me";
         const maxResults = getNumber(args.maxResults) ?? 10;
@@ -224,49 +283,56 @@ export async function handleGmailTool(
         );
         listUrl.searchParams.set("q", "is:unread");
         listUrl.searchParams.set("maxResults", String(maxResults));
-        const listData = await fetchJson(listUrl, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const messages = (listData as { messages?: Array<{ id: string }> })
-            ?.messages || [];
-        const results = [];
-        for (const message of messages) {
-            const messageUrl = new URL(
-                `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
-                    userId
-                )}/messages/${encodeURIComponent(message.id)}`
-            );
-            messageUrl.searchParams.set("format", "full");
-            const data = await fetchJson(messageUrl, {
+        try {
+            const listData = await fetchJson(listUrl, {
                 headers: { Authorization: `Bearer ${accessToken}` },
             });
-            const messageData = data as {
-                id: string;
-                threadId?: string;
-                snippet?: string;
-                payload?: unknown;
+            const messages = (listData as { messages?: Array<{ id: string }> })
+                ?.messages || [];
+            const results = [];
+            for (const message of messages) {
+                const messageUrl = new URL(
+                    `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
+                        userId
+                    )}/messages/${encodeURIComponent(message.id)}`
+                );
+                messageUrl.searchParams.set("format", "full");
+                const data = await fetchJson(messageUrl, {
+                    headers: { Authorization: `Bearer ${accessToken}` },
+                });
+                const messageData = data as {
+                    id: string;
+                    threadId?: string;
+                    snippet?: string;
+                    payload?: unknown;
+                };
+                results.push({
+                    id: messageData.id,
+                    threadId: messageData.threadId,
+                    snippet: messageData.snippet,
+                    payload: messageData.payload,
+                });
+            }
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify({ messages: results }),
+                    },
+                ],
             };
-            results.push({
-                id: messageData.id,
-                threadId: messageData.threadId,
-                snippet: messageData.snippet,
-                payload: messageData.payload,
-            });
+        } catch (error) {
+            return errorResult(
+                error instanceof Error ? error.message : "Failed to fetch messages.",
+                envStatus
+            );
         }
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: JSON.stringify({ messages: results }),
-                },
-            ],
-        };
     }
 
     if (name === "gmail_create_draft") {
         const accessToken = getAccessToken();
         if (!accessToken) {
-            return authHelp();
+            return errorResult(getAuthHelpText(), envStatus);
         }
         const userId = getString(args.userId) || "me";
         const to = getString(args.to);
@@ -274,7 +340,7 @@ export async function handleGmailTool(
         const body = getString(args.body);
         const threadId = getString(args.threadId);
         if (!to || !subject || !body) {
-            throw new Error("Missing required fields: to, subject, body.");
+            return errorResult("Missing required fields: to, subject, body.", envStatus);
         }
         const mime = buildPlainTextEmail({ to, subject, body });
         const payload: { message: { raw: string; threadId?: string } } = {
@@ -283,27 +349,34 @@ export async function handleGmailTool(
             },
         };
         if (threadId) payload.message.threadId = threadId;
-        const data = await fetchJson(
-            `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
-                userId
-            )}/drafts`,
-            {
-                method: "POST",
-                headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(payload),
-            }
-        );
-        return {
-            content: [
+        try {
+            const data = await fetchJson(
+                `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
+                    userId
+                )}/drafts`,
                 {
-                    type: "text",
-                    text: JSON.stringify(data),
-                },
-            ],
-        };
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify(payload),
+                }
+            );
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify(data),
+                    },
+                ],
+            };
+        } catch (error) {
+            return errorResult(
+                error instanceof Error ? error.message : "Failed to create draft.",
+                envStatus
+            );
+        }
     }
 
     return null;
