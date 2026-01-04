@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { readFile } from "node:fs/promises";
+import { getAuthHelpText } from "../src/auth.js";
 import { fileURLToPath } from "node:url";
 
 const argv = process.argv.slice(2);
@@ -129,9 +130,7 @@ async function main() {
         logToolResult("Refresh result:", result);
     } else if (shouldDraft) {
         if (!process.env.GOOGLE_ACCESS_TOKEN) {
-            throw new Error(
-                "Missing GOOGLE_ACCESS_TOKEN. Add it to secrets.env or export it before running."
-            );
+            throw new Error(getAuthHelpText());
         }
         if (!to) {
             throw new Error("Missing --to for draft creation.");
@@ -149,9 +148,7 @@ async function main() {
         logToolResult("Draft result:", result);
     } else {
         if (!process.env.GOOGLE_ACCESS_TOKEN) {
-            throw new Error(
-                "Missing GOOGLE_ACCESS_TOKEN. Add it to secrets.env or export it before running."
-            );
+            throw new Error(getAuthHelpText());
         }
         console.log("Fetching unread messages...");
         const result = await client.callTool({

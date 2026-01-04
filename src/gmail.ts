@@ -6,10 +6,22 @@ import {
     getString,
 } from "./utils.js";
 import { getAccessToken, getClientCredentials } from "./secrets.js";
+import { getAuthHelpText } from "./auth.js";
 
 type ToolResult = {
     content: Array<{ type: "text"; text: string }>;
 };
+
+function authHelp(): ToolResult {
+    return {
+        content: [
+            {
+                type: "text",
+                text: getAuthHelpText(),
+            },
+        ],
+    };
+}
 
 export const gmailTools = [
     {
@@ -198,9 +210,7 @@ export async function handleGmailTool(
     if (name === "gmail_get_unread") {
         const accessToken = getAccessToken(args);
         if (!accessToken) {
-            throw new Error(
-                "Missing access token. Set GOOGLE_ACCESS_TOKEN or pass accessToken."
-            );
+            return authHelp();
         }
         const userId = getString(args.userId) || "me";
         const maxResults = getNumber(args.maxResults) ?? 10;
@@ -223,11 +233,7 @@ export async function handleGmailTool(
                     userId
                 )}/messages/${encodeURIComponent(message.id)}`
             );
-            messageUrl.searchParams.set("format", "metadata");
-            messageUrl.searchParams.set(
-                "metadataHeaders",
-                ["From", "To", "Subject", "Date"].join(",")
-            );
+            messageUrl.searchParams.set("format", "full");
             const data = await fetchJson(messageUrl, {
                 headers: { Authorization: `Bearer ${accessToken}` },
             });
@@ -257,9 +263,7 @@ export async function handleGmailTool(
     if (name === "gmail_create_draft") {
         const accessToken = getAccessToken(args);
         if (!accessToken) {
-            throw new Error(
-                "Missing access token. Set GOOGLE_ACCESS_TOKEN or pass accessToken."
-            );
+            return authHelp();
         }
         const userId = getString(args.userId) || "me";
         const to = getString(args.to);
