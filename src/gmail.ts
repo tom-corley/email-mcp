@@ -60,7 +60,7 @@ export const gmailTools = [
                     default: "consent",
                 },
             },
-            required: ["redirectUri"],
+            required: [],
         },
     },
     {
@@ -109,9 +109,12 @@ export async function handleGmailTool(
     args: Record<string, unknown>
 ): Promise<ToolResult | null> {
     if (name === "gmail_get_auth_url") {
-        const redirectUri = getString(args.redirectUri);
+        const redirectUri =
+            getString(args.redirectUri) || process.env.GOOGLE_REDIRECT_URI;
         if (!redirectUri) {
-            throw new Error("Missing redirectUri.");
+            throw new Error(
+                "Missing redirectUri. Pass redirectUri or set GOOGLE_REDIRECT_URI in secrets.env."
+            );
         }
         const { clientId } = getClientCredentials();
         const scopes = Array.isArray(args.scope)
