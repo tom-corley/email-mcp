@@ -27,10 +27,24 @@ async function loadSecrets() {
 }
 
 function getString(value: unknown): string | undefined {
-    return typeof value === "string" ? value : undefined;
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    return trimmed.replace(/\\+$/, "");
 }
 function getNumber(value: unknown): number | undefined {
     return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function getClientCredentials() {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+        throw new Error(
+            "Missing GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET. Add them to secrets.env."
+        );
+    }
+    return { clientId, clientSecret };
 }
 
 function getAccessToken(args: Record<string, unknown>): string | undefined {
@@ -125,6 +139,55 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 },
             },
             {
+                name: "gmail_get_auth_url",
+                description: "Create a Google OAuth URL for Gmail access",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        redirectUri: { type: "string" },
+                        scope: {
+                            type: "array",
+                            items: { type: "string" },
+                            default: ["https://www.googleapis.com/auth/gmail.readonly"],
+                        },
+                        accessType: {
+                            type: "string",
+                            enum: ["online", "offline"],
+                            default: "offline",
+                        },
+                        prompt: {
+                            type: "string",
+                            enum: ["consent", "none", "select_account"],
+                            default: "consent",
+                        },
+                    },
+                    required: ["redirectUri"],
+                },
+            },
+            {
+                name: "gmail_exchange_code",
+                description: "Exchange an OAuth authorization code for tokens",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        code: { type: "string" },
+                        redirectUri: { type: "string" },
+                    },
+                    required: ["code", "redirectUri"],
+                },
+            },
+            {
+                name: "gmail_refresh_access_token",
+                description: "Exchange a refresh token for a new access token",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        refreshToken: { type: "string" },
+                    },
+                    required: [],
+                },
+            },
+            {
                 name: "gmail_create_draft",
                 description: "Create a draft reply with plain text content",
                 inputSchema: {
@@ -152,6 +215,101 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 {
                     type: "text",
                     text: `Current time: ${new Date().toISOString()} and the secret word is "Cryptic"`,
+                },
+            ],
+        };
+    }
+    if (request.params.name === "gmail_get_auth_url") {
+        const args = request.params.arguments ?? {};
+        const redirectUri = getString(args.redirectUri);
+        if (!redirectUri) {
+            throw new Error("Missing redirectUri.");
+        }
+        const { clientId } = getClientCredentials();
+        const scopes = Array.isArray(args.scope)
+            ? args.scope.filter((scope) => typeof scope === "string")
+            : [];
+        const accessType =
+            getString(args.accessType) === "online" ? "online" : "offline";
+        const prompt = getString(args.prompt);
+        const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+        authUrl.searchParams.set("client_id", clientId);
+        authUrl.searchParams.set("redirect_uri", redirectUri);
+        authUrl.searchParams.set("response_type", "code");
+        authUrl.searchParams.set(
+            "scope",
+            scopes.length > 0
+                ? scopes.join(" ")
+                : "https://www.googleapis.com/auth/gmail.readonly"
+        );
+        authUrl.searchParams.set("access_type", accessType);
+        if (prompt === "consent" || prompt === "none" || prompt === "select_account") {
+            authUrl.searchParams.set("prompt", prompt);
+        }
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: authUrl.toString(),
+                },
+            ],
+        };
+    }
+    if (request.params.name === "gmail_exchange_code") {
+        const args = request.params.arguments ?? {};
+        const code = getString(args.code);
+        const redirectUri = getString(args.redirectUri);
+        if (!code || !redirectUri) {
+            throw new Error("Missing code or redirectUri.");
+        }
+        const { clientId, clientSecret } = getClientCredentials();
+        const body = new URLSearchParams({
+            code,
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_uri: redirectUri,
+            grant_type: "authorization_code",
+        });
+        const data = await fetchJson("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body,
+        });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(data),
+                },
+            ],
+        };
+    }
+    if (request.params.name === "gmail_refresh_access_token") {
+        const args = request.params.arguments ?? {};
+        const refreshToken =
+            getString(args.refreshToken) || process.env.GOOGLE_REFRESH_TOKEN;
+        if (!refreshToken) {
+            throw new Error(
+                "Missing refresh token. Set GOOGLE_REFRESH_TOKEN or pass refreshToken."
+            );
+        }
+        const { clientId, clientSecret } = getClientCredentials();
+        const body = new URLSearchParams({
+            refresh_token: refreshToken,
+            client_id: clientId,
+            client_secret: clientSecret,
+            grant_type: "refresh_token",
+        });
+        const data = await fetchJson("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body,
+        });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(data),
                 },
             ],
         };
@@ -200,8 +358,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
             content: [
                 {
-                    type: "json",
-                    json: { messages: results },
+                    type: "text",
+                    text: JSON.stringify({ messages: results }),
                 },
             ],
         };
@@ -243,8 +401,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
             content: [
                 {
-                    type: "json",
-                    json: data,
+                    type: "text",
+                    text: JSON.stringify(data),
                 },
             ],
         };

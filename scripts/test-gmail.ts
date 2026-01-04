@@ -12,11 +12,16 @@ function getArg(name: string): string | null {
 }
 
 const shouldDraft = argv.includes("--draft");
+const shouldAuthUrl = argv.includes("--auth-url");
+const shouldExchangeCode = argv.includes("--exchange-code");
+const shouldRefreshToken = argv.includes("--refresh-token");
 const maxResults = Number(getArg("--max") || 5);
 const to = getArg("--to");
 const subject = getArg("--subject") || "Test reply";
 const body = getArg("--body") || "Hello from MCP test script.";
 const threadId = getArg("--thread");
+const redirectUri = getArg("--redirect-uri");
+const code = getArg("--code");
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const serverPath = fileURLToPath(new URL("../src/index.ts", import.meta.url));
@@ -42,58 +47,120 @@ async function loadSecrets() {
   }
 }
 
-async function main() {
-  await loadSecrets();
-  if (!process.env.GOOGLE_ACCESS_TOKEN) {
-    throw new Error(
-      "Missing GOOGLE_ACCESS_TOKEN. Add it to secrets.env or export it before running."
+function isTextContent(
+    content: unknown
+): content is { type: "text"; text: string } {
+    return (
+        typeof content === "object" &&
+        content !== null &&
+        (content as { type?: unknown }).type === "text" &&
+        typeof (content as { text?: unknown }).text === "string"
     );
-  }
-  const client = new Client(
-    { name: "gmail-test-client", version: "1.0.0" },
-    { capabilities: {} }
-  );
-  const transport = new StdioClientTransport({
-    command: "node",
-    args: ["--loader", "tsx", serverPath],
-    stderr: "inherit",
-    cwd: projectRoot,
-  });
+}
+
+function logToolResult(label: string, result: unknown) {
+    if (!result || typeof result !== "object") {
+        console.log(label, result);
+        return;
+    }
+    const content = Array.isArray((result as { content?: unknown }).content)
+        ? ((result as { content?: unknown }).content as unknown[])[0]
+        : null;
+    if (isTextContent(content)) {
+        console.log(label, content.text);
+        return;
+    }
+    console.log(label, JSON.stringify(result, null, 2));
+}
+
+async function main() {
+    await loadSecrets();
+    const client = new Client(
+        { name: "gmail-test-client", version: "1.0.0" },
+        { capabilities: {} }
+    );
+    const transport = new StdioClientTransport({
+        command: "node",
+        args: ["--import", "tsx", serverPath],
+        stderr: "inherit",
+        cwd: projectRoot,
+    });
 
   console.log("Connecting to MCP server...");
   await client.connect(transport);
   console.log("Connected.");
 
   const tools = await client.listTools();
-  console.log(
-    "Available tools:",
-    tools.tools.map((tool) => tool.name).join(", ") || "(none)"
-  );
+    console.log(
+        "Available tools:",
+        tools.tools.map((tool) => tool.name).join(", ") || "(none)"
+    );
 
-  if (shouldDraft) {
-    if (!to) {
-      throw new Error("Missing --to for draft creation.");
-    }
-    console.log("Creating draft...");
-    const result = await client.callTool({
-      name: "gmail_create_draft",
-      arguments: {
-        to,
-        subject,
-        body,
-        threadId: threadId || undefined,
-      },
-    });
-    console.log("Draft result:", JSON.stringify(result, null, 2));
-  } else {
-    console.log("Fetching unread messages...");
-    const result = await client.callTool({
-      name: "gmail_get_unread",
-      arguments: {
-        maxResults,
-      },
-    });
-    console.log("Unread result:", JSON.stringify(result, null, 2));
+    if (shouldAuthUrl) {
+        if (!redirectUri) {
+            throw new Error("Missing --redirect-uri for auth URL.");
+        }
+        console.log("Requesting auth URL...");
+        const result = await client.callTool({
+            name: "gmail_get_auth_url",
+            arguments: {
+                redirectUri,
+            },
+        });
+        logToolResult("Auth URL:", result);
+    } else if (shouldExchangeCode) {
+        if (!code || !redirectUri) {
+            throw new Error("Missing --code or --redirect-uri for exchange.");
+        }
+        console.log("Exchanging auth code...");
+        const result = await client.callTool({
+            name: "gmail_exchange_code",
+            arguments: {
+                code,
+                redirectUri,
+            },
+        });
+        logToolResult("Exchange result:", result);
+    } else if (shouldRefreshToken) {
+        console.log("Refreshing access token...");
+        const result = await client.callTool({
+            name: "gmail_refresh_access_token",
+        });
+        logToolResult("Refresh result:", result);
+    } else if (shouldDraft) {
+        if (!process.env.GOOGLE_ACCESS_TOKEN) {
+            throw new Error(
+                "Missing GOOGLE_ACCESS_TOKEN. Add it to secrets.env or export it before running."
+            );
+        }
+        if (!to) {
+            throw new Error("Missing --to for draft creation.");
+        }
+        console.log("Creating draft...");
+        const result = await client.callTool({
+            name: "gmail_create_draft",
+            arguments: {
+                to,
+                subject,
+                body,
+                threadId: threadId || undefined,
+            },
+        });
+        logToolResult("Draft result:", result);
+    } else {
+        if (!process.env.GOOGLE_ACCESS_TOKEN) {
+            throw new Error(
+                "Missing GOOGLE_ACCESS_TOKEN. Add it to secrets.env or export it before running."
+            );
+        }
+        console.log("Fetching unread messages...");
+        const result = await client.callTool({
+            name: "gmail_get_unread",
+            arguments: {
+                maxResults,
+            },
+        });
+        logToolResult("Unread result:", result);
   }
 
   await transport.close();
