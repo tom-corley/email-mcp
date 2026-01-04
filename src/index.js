@@ -1,9 +1,9 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { 
+import {
     CallToolRequestSchema,
     ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types/index.js";
+} from "@modelcontextprotocol/sdk/types.js";
 
 // Create server instance
 const server = new Server(
