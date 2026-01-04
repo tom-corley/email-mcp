@@ -2,11 +2,12 @@
   "name": "email-mcp",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "src/index.ts",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc --noEmit",
-    "start": "node src/index.js"
+    "start": "tsx src/index.ts",
+    "test:gmail": "tsx scripts/test-gmail.ts"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
+    "tsx": "^4.20.5",
     "typescript": "^5.9.3"
   }
 }
