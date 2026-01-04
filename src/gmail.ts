@@ -1,0 +1,303 @@
+import {
+    base64UrlEncode,
+    buildPlainTextEmail,
+    fetchJson,
+    getNumber,
+    getString,
+} from "./utils.js";
+import { getAccessToken, getClientCredentials } from "./secrets.js";
+
+type ToolResult = {
+    content: Array<{ type: "text"; text: string }>;
+};
+
+export const gmailTools = [
+    {
+        name: "gmail_get_unread",
+        description: "List unread Gmail messages with basic metadata",
+        inputSchema: {
+            type: "object",
+            properties: {
+                accessToken: { type: "string" },
+                userId: { type: "string", default: "me" },
+                maxResults: { type: "number", default: 10 },
+            },
+            required: [],
+        },
+    },
+    {
+        name: "gmail_get_auth_url",
+        description: "Create a Google OAuth URL for Gmail access",
+        inputSchema: {
+            type: "object",
+            properties: {
+                redirectUri: { type: "string" },
+                scope: {
+                    type: "array",
+                    items: { type: "string" },
+                    default: ["https://www.googleapis.com/auth/gmail.readonly"],
+                },
+                accessType: {
+                    type: "string",
+                    enum: ["online", "offline"],
+                    default: "offline",
+                },
+                prompt: {
+                    type: "string",
+                    enum: ["consent", "none", "select_account"],
+                    default: "consent",
+                },
+            },
+            required: ["redirectUri"],
+        },
+    },
+    {
+        name: "gmail_exchange_code",
+        description: "Exchange an OAuth authorization code for tokens",
+        inputSchema: {
+            type: "object",
+            properties: {
+                code: { type: "string" },
+                redirectUri: { type: "string" },
+            },
+            required: ["code", "redirectUri"],
+        },
+    },
+    {
+        name: "gmail_refresh_access_token",
+        description: "Exchange a refresh token for a new access token",
+        inputSchema: {
+            type: "object",
+            properties: {
+                refreshToken: { type: "string" },
+            },
+            required: [],
+        },
+    },
+    {
+        name: "gmail_create_draft",
+        description: "Create a draft reply with plain text content",
+        inputSchema: {
+            type: "object",
+            properties: {
+                accessToken: { type: "string" },
+                userId: { type: "string", default: "me" },
+                to: { type: "string" },
+                subject: { type: "string" },
+                body: { type: "string" },
+                threadId: { type: "string" },
+            },
+            required: ["to", "subject", "body"],
+        },
+    },
+] as const;
+
+export async function handleGmailTool(
+    name: string,
+    args: Record<string, unknown>
+): Promise<ToolResult | null> {
+    if (name === "gmail_get_auth_url") {
+        const redirectUri = getString(args.redirectUri);
+        if (!redirectUri) {
+            throw new Error("Missing redirectUri.");
+        }
+        const { clientId } = getClientCredentials();
+        const scopes = Array.isArray(args.scope)
+            ? args.scope.filter((scope): scope is string => typeof scope === "string")
+            : [];
+        const accessType =
+            getString(args.accessType) === "online" ? "online" : "offline";
+        const prompt = getString(args.prompt);
+        const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+        authUrl.searchParams.set("client_id", clientId);
+        authUrl.searchParams.set("redirect_uri", redirectUri);
+        authUrl.searchParams.set("response_type", "code");
+        authUrl.searchParams.set(
+            "scope",
+            scopes.length > 0
+                ? scopes.join(" ")
+                : "https://www.googleapis.com/auth/gmail.readonly"
+        );
+        authUrl.searchParams.set("access_type", accessType);
+        if (
+            prompt === "consent" ||
+            prompt === "none" ||
+            prompt === "select_account"
+        ) {
+            authUrl.searchParams.set("prompt", prompt);
+        }
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: authUrl.toString(),
+                },
+            ],
+        };
+    }
+
+    if (name === "gmail_exchange_code") {
+        const code = getString(args.code);
+        const redirectUri = getString(args.redirectUri);
+        if (!code || !redirectUri) {
+            throw new Error("Missing code or redirectUri.");
+        }
+        const { clientId, clientSecret } = getClientCredentials();
+        const body = new URLSearchParams({
+            code,
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_uri: redirectUri,
+            grant_type: "authorization_code",
+        });
+        const data = await fetchJson("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body,
+        });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(data),
+                },
+            ],
+        };
+    }
+
+    if (name === "gmail_refresh_access_token") {
+        const refreshToken =
+            getString(args.refreshToken) || process.env.GOOGLE_REFRESH_TOKEN;
+        if (!refreshToken) {
+            throw new Error(
+                "Missing refresh token. Set GOOGLE_REFRESH_TOKEN or pass refreshToken."
+            );
+        }
+        const { clientId, clientSecret } = getClientCredentials();
+        const body = new URLSearchParams({
+            refresh_token: refreshToken,
+            client_id: clientId,
+            client_secret: clientSecret,
+            grant_type: "refresh_token",
+        });
+        const data = await fetchJson("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body,
+        });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(data),
+                },
+            ],
+        };
+    }
+
+    if (name === "gmail_get_unread") {
+        const accessToken = getAccessToken(args);
+        if (!accessToken) {
+            throw new Error(
+                "Missing access token. Set GOOGLE_ACCESS_TOKEN or pass accessToken."
+            );
+        }
+        const userId = getString(args.userId) || "me";
+        const maxResults = getNumber(args.maxResults) ?? 10;
+        const listUrl = new URL(
+            `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
+                userId
+            )}/messages`
+        );
+        listUrl.searchParams.set("q", "is:unread");
+        listUrl.searchParams.set("maxResults", String(maxResults));
+        const listData = await fetchJson(listUrl, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const messages = (listData as { messages?: Array<{ id: string }> })
+            ?.messages || [];
+        const results = [];
+        for (const message of messages) {
+            const messageUrl = new URL(
+                `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
+                    userId
+                )}/messages/${encodeURIComponent(message.id)}`
+            );
+            messageUrl.searchParams.set("format", "metadata");
+            messageUrl.searchParams.set(
+                "metadataHeaders",
+                ["From", "To", "Subject", "Date"].join(",")
+            );
+            const data = await fetchJson(messageUrl, {
+                headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            const messageData = data as {
+                id: string;
+                threadId?: string;
+                snippet?: string;
+                payload?: unknown;
+            };
+            results.push({
+                id: messageData.id,
+                threadId: messageData.threadId,
+                snippet: messageData.snippet,
+                payload: messageData.payload,
+            });
+        }
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({ messages: results }),
+                },
+            ],
+        };
+    }
+
+    if (name === "gmail_create_draft") {
+        const accessToken = getAccessToken(args);
+        if (!accessToken) {
+            throw new Error(
+                "Missing access token. Set GOOGLE_ACCESS_TOKEN or pass accessToken."
+            );
+        }
+        const userId = getString(args.userId) || "me";
+        const to = getString(args.to);
+        const subject = getString(args.subject);
+        const body = getString(args.body);
+        const threadId = getString(args.threadId);
+        if (!to || !subject || !body) {
+            throw new Error("Missing required fields: to, subject, body.");
+        }
+        const mime = buildPlainTextEmail({ to, subject, body });
+        const payload: { message: { raw: string; threadId?: string } } = {
+            message: {
+                raw: base64UrlEncode(mime),
+            },
+        };
+        if (threadId) payload.message.threadId = threadId;
+        const data = await fetchJson(
+            `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
+                userId
+            )}/drafts`,
+            {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+            }
+        );
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(data),
+                },
+            ],
+        };
+    }
+
+    return null;
+}
