@@ -1,5 +1,7 @@
 import {
     base64UrlEncode,
+    base64UrlDecode,
+    decodeHtmlEntities,
     buildPlainTextEmail,
     fetchJson,
     getNumber,
@@ -124,6 +126,37 @@ export async function handleGmailTool(
     args: Record<string, unknown>
 ): Promise<ToolResult | null> {
     const envStatus = getAuthEnvStatus();
+
+    type GmailPart = {
+        mimeType?: string;
+        body?: { data?: string };
+        parts?: unknown[];
+    };
+
+    function isGmailPart(value: unknown): value is GmailPart {
+        return typeof value === "object" && value !== null;
+    }
+
+    function extractPlainText(payload: unknown): string | null {
+        if (!payload || typeof payload !== "object") return null;
+        const data = payload as GmailPart;
+        if (data.body?.data) {
+            return decodeHtmlEntities(base64UrlDecode(data.body.data));
+        }
+        const queue: unknown[] = Array.isArray(data.parts) ? [...data.parts] : [];
+        while (queue.length > 0) {
+            const part = queue.shift();
+            if (!isGmailPart(part)) continue;
+            const partData = part;
+            if (partData.mimeType === "text/plain" && partData.body?.data) {
+                return decodeHtmlEntities(base64UrlDecode(partData.body.data));
+            }
+            if (Array.isArray(partData.parts)) {
+                queue.push(...partData.parts);
+            }
+        }
+        return null;
+    }
 
     if (name === "gmail_get_auth_url") {
         const redirectUri =
@@ -306,10 +339,12 @@ export async function handleGmailTool(
                     snippet?: string;
                     payload?: unknown;
                 };
+                const decodedText = extractPlainText(messageData.payload);
                 results.push({
                     id: messageData.id,
                     threadId: messageData.threadId,
                     snippet: messageData.snippet,
+                    text: decodedText,
                     payload: messageData.payload,
                 });
             }
