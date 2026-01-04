@@ -17,10 +17,8 @@ const shouldAuthUrl = argv.includes("--auth-url");
 const shouldExchangeCode = argv.includes("--exchange-code");
 const shouldRefreshToken = argv.includes("--refresh-token");
 const maxResults = Number(getArg("--max") || 5);
-const to = getArg("--to");
-const subject = getArg("--subject") || "Test reply";
 const body = getArg("--body") || "Hello from MCP test script.";
-const threadId = getArg("--thread");
+const messageId = getArg("--message-id");
 const redirectUri = getArg("--redirect-uri");
 const code = getArg("--code");
 
@@ -98,14 +96,11 @@ async function main() {
     );
 
     if (shouldAuthUrl) {
-        if (!redirectUri) {
-            throw new Error("Missing --redirect-uri for auth URL.");
-        }
         console.log("Requesting auth URL...");
         const result = await client.callTool({
             name: "gmail_get_auth_url",
             arguments: {
-                redirectUri,
+                redirectUri: redirectUri || undefined,
             },
         });
         logToolResult("Auth URL:", result);
@@ -132,17 +127,15 @@ async function main() {
         if (!process.env.GOOGLE_ACCESS_TOKEN) {
             throw new Error(getAuthHelpText());
         }
-        if (!to) {
-            throw new Error("Missing --to for draft creation.");
+        if (!messageId) {
+            throw new Error("Missing --message-id for draft reply.");
         }
         console.log("Creating draft...");
         const result = await client.callTool({
-            name: "gmail_create_draft",
+            name: "create_draft_reply",
             arguments: {
-                to,
-                subject,
                 body,
-                threadId: threadId || undefined,
+                messageId,
             },
         });
         logToolResult("Draft result:", result);
@@ -152,7 +145,7 @@ async function main() {
         }
         console.log("Fetching unread messages...");
         const result = await client.callTool({
-            name: "gmail_get_unread",
+            name: "get_unread_emails",
             arguments: {
                 maxResults,
             },

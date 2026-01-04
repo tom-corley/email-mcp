@@ -2,7 +2,6 @@ import {
     base64UrlEncode,
     base64UrlDecode,
     decodeHtmlEntities,
-    buildPlainTextEmail,
     fetchJson,
     getNumber,
     getString,
@@ -42,12 +41,11 @@ function authHelp(): ToolResult {
 
 export const gmailTools = [
     {
-        name: "gmail_get_unread",
-        description: "List unread Gmail messages with basic metadata",
+        name: "get_unread_emails",
+        description: "List unread Gmail messages with sender, subject, snippet, and IDs",
         inputSchema: {
             type: "object",
             properties: {
-                accessToken: { type: "string" },
                 userId: { type: "string", default: "me" },
                 maxResults: { type: "number", default: 10 },
             },
@@ -104,19 +102,16 @@ export const gmailTools = [
         },
     },
     {
-        name: "gmail_create_draft",
-        description: "Create a draft reply with plain text content",
+        name: "create_draft_reply",
+        description: "Create a draft reply to a message ID with plain text content",
         inputSchema: {
             type: "object",
             properties: {
-                accessToken: { type: "string" },
                 userId: { type: "string", default: "me" },
-                to: { type: "string" },
-                subject: { type: "string" },
+                messageId: { type: "string" },
                 body: { type: "string" },
-                threadId: { type: "string" },
             },
-            required: ["to", "subject", "body"],
+            required: ["messageId", "body"],
         },
     },
 ] as const;
@@ -131,6 +126,7 @@ export async function handleGmailTool(
         mimeType?: string;
         body?: { data?: string };
         parts?: unknown[];
+        headers?: Array<{ name?: string; value?: string }>;
     };
 
     function isGmailPart(value: unknown): value is GmailPart {
@@ -156,6 +152,39 @@ export async function handleGmailTool(
             }
         }
         return null;
+    }
+
+    function getHeaderValue(payload: GmailPart | undefined, headerName: string) {
+        const headers = payload?.headers;
+        if (!Array.isArray(headers)) return undefined;
+        const match = headers.find(
+            (header) =>
+                header?.name?.toLowerCase() === headerName.toLowerCase()
+        );
+        return match?.value;
+    }
+
+    function buildReplyMime(headers: {
+        to: string;
+        subject: string;
+        inReplyTo?: string;
+        references?: string;
+        body: string;
+    }) {
+        const lines = [
+            `To: ${headers.to}`,
+            "Content-Type: text/plain; charset=utf-8",
+            "MIME-Version: 1.0",
+            `Subject: ${headers.subject}`,
+        ];
+        if (headers.inReplyTo) {
+            lines.push(`In-Reply-To: ${headers.inReplyTo}`);
+        }
+        if (headers.references) {
+            lines.push(`References: ${headers.references}`);
+        }
+        lines.push("", headers.body);
+        return lines.join("\r\n");
     }
 
     if (name === "gmail_get_auth_url") {
@@ -302,7 +331,7 @@ export async function handleGmailTool(
         }
     }
 
-    if (name === "gmail_get_unread") {
+    if (name === "get_unread_emails") {
         const accessToken = getAccessToken();
         if (!accessToken) {
             return errorResult(getAuthHelpText(), envStatus);
@@ -339,13 +368,17 @@ export async function handleGmailTool(
                     snippet?: string;
                     payload?: unknown;
                 };
-                const decodedText = extractPlainText(messageData.payload);
+                const payload = messageData.payload as GmailPart | undefined;
+                const decodedText = extractPlainText(payload);
+                const from = getHeaderValue(payload, "From");
+                const subject = getHeaderValue(payload, "Subject");
                 results.push({
                     id: messageData.id,
                     threadId: messageData.threadId,
+                    from,
+                    subject,
                     snippet: messageData.snippet,
                     text: decodedText,
-                    payload: messageData.payload,
                 });
             }
             return {
@@ -364,27 +397,77 @@ export async function handleGmailTool(
         }
     }
 
-    if (name === "gmail_create_draft") {
+    if (name === "create_draft_reply") {
         const accessToken = getAccessToken();
         if (!accessToken) {
             return errorResult(getAuthHelpText(), envStatus);
         }
         const userId = getString(args.userId) || "me";
-        const to = getString(args.to);
-        const subject = getString(args.subject);
         const body = getString(args.body);
-        const threadId = getString(args.threadId);
-        if (!to || !subject || !body) {
-            return errorResult("Missing required fields: to, subject, body.", envStatus);
+        const messageId = getString(args.messageId);
+        if (!messageId || !body) {
+            return errorResult("Missing required fields: messageId, body.", envStatus);
         }
-        const mime = buildPlainTextEmail({ to, subject, body });
-        const payload: { message: { raw: string; threadId?: string } } = {
-            message: {
-                raw: base64UrlEncode(mime),
-            },
-        };
-        if (threadId) payload.message.threadId = threadId;
         try {
+            const messageUrl = new URL(
+                `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
+                    userId
+                )}/messages/${encodeURIComponent(messageId)}`
+            );
+            messageUrl.searchParams.set("format", "metadata");
+            messageUrl.searchParams.set(
+                "metadataHeaders",
+                ["From", "Reply-To", "Subject", "Message-ID", "References"].join(",")
+            );
+            const original = await fetchJson(messageUrl, {
+                headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            const originalData = original as {
+                threadId?: string;
+                payload?: unknown;
+            };
+            const payload = originalData.payload as GmailPart | undefined;
+            const replyTo =
+                getHeaderValue(payload, "Reply-To") ||
+                getHeaderValue(payload, "From");
+            if (!replyTo) {
+                return errorResult("Could not determine reply recipient.", envStatus);
+            }
+            const originalSubject = getHeaderValue(payload, "Subject") || "";
+            const subject = originalSubject.toLowerCase().startsWith("re:")
+                ? originalSubject
+                : `Re: ${originalSubject}`.trim();
+            const messageIdHeader = getHeaderValue(payload, "Message-ID");
+            const references = getHeaderValue(payload, "References");
+            const combinedReferences = messageIdHeader
+                ? [references, messageIdHeader].filter(Boolean).join(" ")
+                : references;
+            const replyHeaders: {
+                to: string;
+                subject: string;
+                inReplyTo?: string;
+                references?: string;
+                body: string;
+            } = {
+                to: replyTo,
+                subject,
+                body,
+            };
+            if (messageIdHeader) {
+                replyHeaders.inReplyTo = messageIdHeader;
+            }
+            if (combinedReferences) {
+                replyHeaders.references = combinedReferences;
+            }
+            const mime = buildReplyMime(replyHeaders);
+            const draftPayload: { message: { raw: string; threadId?: string } } = {
+                message: {
+                    raw: base64UrlEncode(mime),
+                },
+            };
+            if (originalData.threadId) {
+                draftPayload.message.threadId = originalData.threadId;
+            }
             const data = await fetchJson(
                 `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(
                     userId
@@ -395,7 +478,7 @@ export async function handleGmailTool(
                         Authorization: `Bearer ${accessToken}`,
                         "Content-Type": "application/json",
                     },
-                    body: JSON.stringify(payload),
+                    body: JSON.stringify(draftPayload),
                 }
             );
             return {
