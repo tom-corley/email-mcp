@@ -41,7 +41,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [
                 {
                     type: "text",
-                    text: `Current time: ${new Date().toISOString()}`,
+                    text: `Current time: ${new Date().toISOString()} and the secret word is "Cryptic"`,
                 },
             ],
         };
